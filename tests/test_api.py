@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from custom_components.greenchoice.api import GreenchoiceApi
-from custom_components.greenchoice.model import Rates
+from custom_components.greenchoice.model import Consumptions, MeterReadings, Rates
 
 
 @pytest.mark.asyncio
@@ -267,3 +267,135 @@ async def test_unparseable_period_still_reports_rates(mock_api, rate_details_res
     assert rates.gas is not None
     assert rates.gas.delivery is not None
     assert rates.gas.delivery.all_in_rate_including_vat == 0.8
+
+
+def test_meter_row_carrying_both_fuels_reports_both():
+    """One row per date, both fuels: the shape Greenchoice sends now.
+
+    Readings used to arrive one fuel at a time, so ``gas is not None`` was
+    enough to tell the two apart. A dual-fuel row makes that test true for
+    every row, which left the electricity sensors at ``unknown``.
+    """
+    readings = MeterReadings.model_validate(
+        {
+            "year": 2026,
+            "hasElectricity": True,
+            "hasGas": True,
+            "months": [
+                {
+                    "month": 9,
+                    "readings": [
+                        {
+                            "readingDate": "2026-09-20T00:00:00",
+                            "normalConsumption": 18863,
+                            "offPeakConsumption": 20168,
+                            "normalFeedIn": 19049,
+                            "offPeakFeedIn": 7866,
+                            "gas": 13941,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    electricity = readings.last_electricity_reading
+    gas = readings.last_gas_reading
+
+    assert electricity is not None
+    assert electricity.normal_consumption == 18863
+    assert gas is not None
+    assert gas.gas == 13941
+
+
+def test_gas_only_rows_report_no_electricity_reading():
+    """A gas-only agreement leaves the electricity registers null."""
+    readings = MeterReadings.model_validate(
+        {
+            "year": 2026,
+            "hasElectricity": False,
+            "hasGas": True,
+            "months": [
+                {
+                    "month": 9,
+                    "readings": [
+                        {
+                            "readingDate": "2026-09-20T00:00:00",
+                            "normalConsumption": None,
+                            "offPeakConsumption": None,
+                            "normalFeedIn": None,
+                            "offPeakFeedIn": None,
+                            "gas": 13941,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert readings.last_electricity_reading is None
+    assert readings.last_gas_reading is not None
+
+
+def test_consumptions_maps_v3_products_onto_per_fuel_items(
+    consumptions_hour_with_gas_response,
+):
+    """The v3 ``periods``/``products`` shape feeds the statistics unchanged."""
+    consumptions = Consumptions.model_validate(consumptions_hour_with_gas_response)
+
+    item = consumptions.consumption_costs[0]
+
+    assert item.electricity is not None
+    assert item.electricity.total_delivery_consumption == 0.422
+    assert item.electricity.total_delivery_costs == 0.11276
+    assert item.electricity.total_feed_in_consumption == 0
+    assert item.electricity.total_fixed_costs == -0.00379
+    assert item.gas is not None
+    assert item.gas.total_delivery_consumption == 0.005
+    assert item.gas.total_delivery_costs == 0.00653
+    assert item.gas.total_fixed_costs == 0.04199
+
+
+def test_consumptions_without_gas_product_leaves_gas_unset(
+    consumptions_hour_response,
+):
+    """An electricity-only day carries no Gas product, so no gas item."""
+    consumptions = Consumptions.model_validate(consumptions_hour_response)
+
+    item = consumptions.consumption_costs[0]
+
+    assert item.electricity is not None
+    assert item.gas is None
+
+
+def test_consumptions_request_targets_v3():
+    """The v2 path 404s; the query parameters are unchanged."""
+    url = Consumptions.Request(
+        customer_number=2222,
+        agreement_id=1111,
+        interval="Hour",
+        start=datetime.date(2026, 9, 20),
+        end=datetime.date(2026, 9, 21),
+    ).build_url()
+
+    assert url == (
+        "/api/v3/customers/2222/agreements/1111/consumptions"
+        "?interval=Hour&start=2026-09-20&end=2026-09-21"
+    )
+
+
+def test_consumptions_total_block_has_no_timestamp(
+    consumptions_hour_with_gas_response,
+):
+    """The range-level ``total`` repeats the products shape without ``consumedOn``.
+
+    Typing it as a period made the whole response unparseable, which is how
+    the v2 -> v3 migration failed the first time round.
+    """
+    consumptions = Consumptions.model_validate(consumptions_hour_with_gas_response)
+
+    assert consumptions.total is not None
+    electricity = consumptions.total.totals("electricity")
+    assert electricity is not None
+    assert electricity.consumption_quantity is not None
+    assert len(consumptions.periods) == 24

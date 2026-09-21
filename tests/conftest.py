@@ -152,8 +152,11 @@ def meters_response_without_gas(data_folder):
     with data_folder.joinpath("test_meters.json").open() as f:
         response = json.load(f)
     response["hasGas"] = False
+    # An electricity-only agreement reports the same rows with the gas
+    # register left null, rather than rows of its own.
     for month in response["months"]:
-        month["readings"] = [r for r in month["readings"] if r["gas"] is None]
+        for reading in month["readings"]:
+            reading["gas"] = None
     return response
 
 
@@ -243,13 +246,15 @@ def contract_response_callback(contract_response, contract_response_without_gas)
 
 @pytest.fixture
 def consumptions_hour_response(data_folder):
-    with data_folder.joinpath("test_consumptions_hour.json").open() as f:
+    """A v3 /consumptions day: 24 hourly periods, electricity only."""
+    with data_folder.joinpath("test_consumptions_hour_v3.json").open() as f:
         return json.load(f)
 
 
 @pytest.fixture
 def consumptions_hour_with_gas_response(data_folder):
-    with data_folder.joinpath("test_consumptions_hour_with_gas.json").open() as f:
+    """The same for a dual-fuel agreement: every period carries Electricity and Gas."""
+    with data_folder.joinpath("test_consumptions_hour_with_gas_v3.json").open() as f:
         return json.load(f)
 
 
@@ -361,14 +366,14 @@ def mock_api(
                             "interval": "Hour",
                             "start": f"{start}T00:00:00",
                             "end": f"{end}T00:00:00",
-                            "consumptionCosts": [],
+                            "periods": [],
                         }
                     )
 
                 mocked.get(
                     re.compile(
                         re.escape(BASE_URL)
-                        + r"/api/v2/customers/\d+/agreements/\d+/consumptions"
+                        + r"/api/v3/customers/\d+/agreements/\d+/consumptions"
                     ),
                     callback=_consumptions_cb,
                     repeat=True,
@@ -488,25 +493,34 @@ def make_consumptions_payload(
 ) -> dict:
     """Build a single-point hourly consumptions API response for the given date."""
     end_str = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
-    item: dict = {
-        "consumedOn": f"{date_str}T00:00:00",
-        "electricity": {
-            "totalDeliveryConsumption": total_delivery,
-            "totalFeedInConsumption": total_feed_in,
-            "hasConsumption": True,
-        },
-        "hasConsumption": True,
-    }
-    if gas_delivery is not None:
-        item["gas"] = {
-            "totalDeliveryConsumption": gas_delivery,
-            "hasConsumption": True,
+    products: list[dict] = [
+        {
+            "type": "Electricity",
+            "unit": "Kwh",
+            "totals": {
+                "consumptionQuantity": total_delivery,
+                "feedInQuantity": total_feed_in,
+            },
         }
+    ]
+    if gas_delivery is not None:
+        products.append(
+            {
+                "type": "Gas",
+                "unit": "M3",
+                "totals": {"consumptionQuantity": gas_delivery},
+            }
+        )
     return {
         "interval": "Hour",
         "start": f"{date_str}T00:00:00",
         "end": f"{end_str}T00:00:00",
-        "consumptionCosts": [item],
+        "periods": [
+            {
+                "consumedOn": f"{date_str}T00:00:00",
+                "products": products,
+            }
+        ],
     }
 
 
