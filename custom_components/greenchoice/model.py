@@ -343,7 +343,31 @@ class Reading(CamelCaseModel):
 
     @property
     def is_gas(self) -> bool:
+        """This row carries a gas meter reading.
+
+        Greenchoice used to publish one row per fuel, so a row with a gas
+        value held nothing else. It now reports both fuels of a dual-fuel
+        agreement in the same row, so this is no longer the complement of
+        ``is_electricity`` — both can be true for one reading.
+        """
         return self.gas is not None
+
+    @property
+    def is_electricity(self) -> bool:
+        """This row carries an electricity meter reading.
+
+        A gas-only agreement leaves all four registers null, which is what
+        separates its rows from an electricity or dual-fuel one.
+        """
+        return any(
+            value is not None
+            for value in (
+                self.normal_consumption,
+                self.off_peak_consumption,
+                self.normal_feed_in,
+                self.off_peak_feed_in,
+            )
+        )
 
 
 class MeterMonth(BaseModel):
@@ -388,7 +412,7 @@ class MeterReadings(CamelCaseModel):
             reading
             for month in self.months
             for reading in month.readings
-            if reading.is_gas == is_gas
+            if (reading.is_gas if is_gas else reading.is_electricity)
         ]
         yield from sorted(readings, key=lambda r: r.reading_date, reverse=True)
 
@@ -470,19 +494,118 @@ class ConsumptionCostsItem(CamelCaseModel):
     has_consumption: bool | None = None
 
 
+class ProductTotals(CamelCaseModel):
+    """The ``totals`` block of one product inside a v3 consumptions period.
+
+    VERIFIED against a live dual-fuel response (interval=Hour, 2026-09-20):
+    every field here was present on both the Electricity and the Gas product,
+    with the gas one leaving the feed-in fields null.
+    """
+
+    consumption_quantity: float | None = None
+    consumption_cost: float | None = None
+    feed_in_quantity: float | None = None
+    feed_in_compensation: float | None = None
+    fixed_cost: float | None = None
+    variable_cost: float | None = None
+    total_cost: float | None = None
+
+
+class ConsumptionProduct(CamelCaseModel):
+    """One fuel inside a v3 consumptions period.
+
+    The per-cost-kind breakdown under ``costs`` is deliberately not mapped:
+    the statistics read whole-period sums, which ``totals`` already carries.
+    """
+
+    type: str
+    unit: str | None = None
+    totals: ProductTotals = ProductTotals()
+
+
+class ConsumptionProducts(CamelCaseModel):
+    """A per-fuel breakdown: one interval, or the response-level ``total``.
+
+    The response repeats this shape twice, once per period and once summed
+    over the whole range. Only the period carries a timestamp, which is what
+    ``ConsumptionPeriod`` adds.
+    """
+
+    products: list[ConsumptionProduct] = []
+    total_cost: float | None = None
+
+    def totals(self, product_type: str) -> ProductTotals | None:
+        """The totals of ``product_type``, or ``None`` if this block lacks it."""
+        for product in self.products:
+            if product.type.lower() == product_type:
+                return product.totals
+        return None
+
+
+class ConsumptionPeriod(ConsumptionProducts):
+    """One interval of a v3 consumptions response."""
+
+    consumed_on: datetime
+
+
 class Consumptions(CamelCaseModel):
-    """/api/v2/customers/{customer_number}/agreements/{agreement_id}/consumptions"""
+    """/api/v3/customers/{customer_number}/agreements/{agreement_id}/consumptions
+
+    Replaces the retired v2 path, which now 404s and left every hourly import
+    failing on the resulting empty body. v3 keeps the same query parameters but
+    groups the fuels per period instead of per response, so ``consumptionCosts``
+    items with ``electricity``/``gas`` sections became ``periods`` holding a
+    ``products`` list. ``consumption_costs`` maps the new shape back onto the
+    per-fuel item the statistics are built from.
+    """
 
     interval: str
     start: datetime
     end: datetime
-    consumption_costs: list[ConsumptionCostsItem] = []
-    total: ConsumptionCostsItem | None = None
+    periods: list[ConsumptionPeriod] = []
+    # Summed over the whole range and timestamp-less, so it is not a period.
+    total: ConsumptionProducts | None = None
     has_consumption: bool | None = None
+
+    @property
+    def consumption_costs(self) -> list[ConsumptionCostsItem]:
+        """The v3 periods as per-fuel items.
+
+        A fuel the agreement does not have is absent from ``products``, and
+        stays ``None`` here, so an electricity-only or gas-only account skips
+        that half exactly as it did under v2.
+        """
+        items: list[ConsumptionCostsItem] = []
+        for period in self.periods:
+            electricity = period.totals("electricity")
+            gas = period.totals("gas")
+            items.append(
+                ConsumptionCostsItem(
+                    consumed_on=period.consumed_on,
+                    electricity=ConsumptionCostsElectricity(
+                        total_delivery_consumption=electricity.consumption_quantity,
+                        total_delivery_costs=electricity.consumption_cost,
+                        total_feed_in_consumption=electricity.feed_in_quantity,
+                        total_feed_in_compensation=electricity.feed_in_compensation,
+                        total_feed_in_costs=electricity.variable_cost,
+                        total_fixed_costs=electricity.fixed_cost,
+                    )
+                    if electricity
+                    else None,
+                    gas=ConsumptionCostsGas(
+                        total_delivery_consumption=gas.consumption_quantity,
+                        total_delivery_costs=gas.consumption_cost,
+                        total_fixed_costs=gas.fixed_cost,
+                    )
+                    if gas
+                    else None,
+                )
+            )
+        return items
 
     class Request(BaseModel):
         request_url: str = (
-            "/api/v2/customers/{customer_number}/agreements/{agreement_id}/consumptions"
+            "/api/v3/customers/{customer_number}/agreements/{agreement_id}/consumptions"
         )
 
         customer_number: int

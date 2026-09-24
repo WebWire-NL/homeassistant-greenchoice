@@ -16,7 +16,7 @@
           "offPeakConsumption": 60000,
           "normalFeedIn": 5000,
           "offPeakFeedIn": 6000,
-          "gas": null
+          "gas": 10000
         },
         {
           "readingDate": "2022-05-05T00:00:00",
@@ -24,7 +24,7 @@
           "offPeakConsumption": 6800,
           "normalFeedIn": 0,
           "offPeakFeedIn": 0,
-          "gas": null
+          "gas": 5000
         }
       ]
     },
@@ -37,44 +37,6 @@
           "offPeakConsumption": 5000,
           "normalFeedIn": 0,
           "offPeakFeedIn": 0,
-          "gas": null
-        }
-      ]
-    },
-    {
-      "month": 6,
-      "readings": []
-    },
-    {
-      "month": 5,
-      "readings": [
-        {
-          "readingDate": "2022-05-06T00:00:00",
-          "normalConsumption": null,
-          "offPeakConsumption": null,
-          "normalFeedIn": null,
-          "offPeakFeedIn": null,
-          "gas": 10000
-        },
-        {
-          "readingDate": "2022-05-05T00:10:00",
-          "normalConsumption": null,
-          "offPeakConsumption": null,
-          "normalFeedIn": null,
-          "offPeakFeedIn": null,
-          "gas": 5000
-        }
-      ]
-    },
-    {
-      "month": 4,
-      "readings": [
-        {
-          "readingDate": "2022-04-10T00:00:00",
-          "normalConsumption": null,
-          "offPeakConsumption": null,
-          "normalFeedIn": null,
-          "offPeakFeedIn": null,
           "gas": 3000
         }
       ]
